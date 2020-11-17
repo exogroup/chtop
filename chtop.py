@@ -48,7 +48,6 @@ MAPPINGS = OrderedDict([
 )
 
 # Global variables
-rows, columns = os.popen('stty size', 'r').read().split() # window size
 pressed_key = Queue.Queue()
 orig_settings = termios.tcgetattr(sys.stdin) # Keep original stdin settings
 
@@ -112,6 +111,7 @@ def processes_pretty_output(data):
   print_format = "{:<36}  {:<13}  {:<10}  {:<25} {:<15}  {:<15}  {:<60}"
   print(color.BOLD + print_format.format(*MAPPINGS.keys()) + color.END)
   for row in data_to_print:
+    rows, columns = os.popen('stty size', 'r').read().split() # determine window size
     print(print_format.format(*row))[0:int(columns)]
 
 # Function used as a thread that polls for pressed key
