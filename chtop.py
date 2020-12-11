@@ -66,8 +66,8 @@ class color:
    END = '\033[0m'
 
 # Trivial function to clear the screen
-def clear(): 
-  _ = os.system('clear') 
+def clear():
+  _ = os.system('clear')
 
 # Function to query CH
 def ch_query(query):
@@ -127,9 +127,9 @@ def key_poller(key_ready, stop):
       pressed_key.put(key)
       key_ready.set()
       sleep(0.2)
-    
+
   # Reset stdin settings (reverts no ENTER behavior)
-  termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings) 
+  termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
 
 # Function used as a thread that displays active processes
 def show_processes(stop, kill):
