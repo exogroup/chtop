@@ -40,6 +40,7 @@ MAPPINGS = OrderedDict([
     ('ID', 'query_id'),
     ('User', 'user'),
     ('PUser', 'http_user_agent'),
+    ('Initial?', 'is_initial_query'),
     ('Host', 'address'),
     ('RAddress', 'http_user_agent'),
     ('Time', 'elapsed'),
@@ -103,12 +104,12 @@ def processes_pretty_output(data):
           else:
             value = 'N/A'
       else:
-        value = row[column]
+        value = str(row[column])
       values.append(value.replace("\n", " ").rstrip())
     data_to_print.append(values)
 
   # Print the data nicely
-  print_format = "{:<36}  {:<13}  {:<10}  {:<25} {:<15}  {:<15}  {:<60}"
+  print_format = "{:<36}  {:<13}  {:<10}  {:<8}  {:<25} {:<15}  {:<15}  {:<60}"
   print(color.BOLD + print_format.format(*MAPPINGS.keys()) + color.END)
   for row in data_to_print:
     rows, columns = os.popen('stty size', 'r').read().split() # determine window size
