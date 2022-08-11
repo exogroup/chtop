@@ -21,14 +21,20 @@ from time import sleep
 from collections import OrderedDict
 import threading
 import os
-import Queue
 import tty
 import re
 import requests
-import urllib
 import sys
 import datetime
 import termios
+
+is_py2 = sys.version[0] == '2'
+if is_py2:
+  import Queue as queue
+  import urllib
+else:
+  import queue as queue
+  import urllib.request, urllib.parse, urllib.error
 
 # Settings
 CH_HOST = '127.0.0.1'
@@ -49,7 +55,7 @@ MAPPINGS = OrderedDict([
 )
 
 # Global variables
-pressed_key = Queue.Queue()
+pressed_key = queue.Queue()
 orig_settings = termios.tcgetattr(sys.stdin) # Keep original stdin settings
 
 # Useful class to control font colors
@@ -71,10 +77,13 @@ def clear():
 
 # Function to query CH
 def ch_query(query):
-  url = URL + urllib.urlencode( { 'query' : query } )
+  if is_py2:
+    url = URL + urllib.urlencode( { 'query' : query } )
+  else:
+    url = URL + urllib.parse.urlencode( { 'query' : query } )
   try:
     response = requests.get(url)
-  except Exception, e:
+  except Exception as e:
     sys.exit("Problem with connectiong to ClickHouse: %s. Exiting." % str(e))
 
   return response
@@ -110,10 +119,10 @@ def processes_pretty_output(data):
 
   # Print the data nicely
   print_format = "{:<36}  {:<13}  {:<10}  {:<8}  {:<25} {:<15}  {:<15}  {:<60}"
-  print(color.BOLD + print_format.format(*MAPPINGS.keys()) + color.END)
+  print((color.BOLD + print_format.format(*list(MAPPINGS.keys())) + color.END))
   for row in data_to_print:
     rows, columns = os.popen('stty size', 'r').read().split() # determine window size
-    print(print_format.format(*row))[0:int(columns)]
+    print((print_format.format(*row))[0:int(columns)])
 
 # Function used as a thread that polls for pressed key
 def key_poller(key_ready, stop):
@@ -153,11 +162,11 @@ def show_full_query():
   query = "SELECT query FROM system.query_log WHERE query_id = '{}' AND event_date = today()"
 
   termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
-  query_id = raw_input(color.UNDERLINE + 'Query ID to analyze:' + color.END + ' ')
+  query_id = input(color.UNDERLINE + 'Query ID to analyze:' + color.END + ' ')
   tty.setcbreak(sys.stdin)
   response = ch_query(query.format(query_id))
   clear()
-  print(response.text)
+  print((response.text))
   sys.stdin.read(1)[0]
 
 # Function to handle query kill command
@@ -165,7 +174,7 @@ def kill_query():
   query = "KILL QUERY WHERE query_id = '{}'"
 
   termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
-  query_id = raw_input(color.UNDERLINE + 'Query ID to kill:' + color.END + ' ')
+  query_id = input(color.UNDERLINE + 'Query ID to kill:' + color.END + ' ')
   tty.setcbreak(sys.stdin)
   ch_query(query.format(query_id))
   clear()
