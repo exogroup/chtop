@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+""" Simple top-like utility for ClickHouse. """
 
 #
 # Copyright 2020 EXADS
@@ -17,205 +18,226 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from time import sleep
-from collections import OrderedDict
-import threading
-import os
-import tty
-import re
-import requests
-import sys
-import datetime
-import termios
+import copy
+import curses
+import json
+import time
 
-is_py2 = sys.version[0] == '2'
-if is_py2:
-  import Queue as queue
-  import urllib
-else:
-  import queue as queue
-  import urllib.request, urllib.parse, urllib.error
+import requests
 
 # Settings
-CH_HOST = '127.0.0.1'
-CH_PORT = '8123'
-PROCESSES_TABLE = 'system.processes'
-REFRESH = 3 # seconds
-URL = 'http://' + CH_HOST + ':' + CH_PORT + '?'
-MAPPINGS = OrderedDict([
-    ('ID', 'query_id'),
-    ('User', 'user'),
-    ('PUser', 'http_user_agent'),
-    ('Initial?', 'is_initial_query'),
-    ('Host', 'address'),
-    ('RAddress', 'http_user_agent'),
-    ('Time', 'elapsed'),
-    ('Query', 'query')
-  ]
+CH_HOST = "127.0.0.1"
+CH_PORT = "8123"
+CH_URL = f"http://{CH_HOST}:{CH_PORT}"
+CH_QUERY_TIMEOUT = 10
+
+PROCESSES_TABLE = "system.processes"
+REFRESH = 2  # seconds
+MAPPINGS = dict(
+    [
+        ("ID", "query_id"),
+        ("User", "user"),
+        ("PUser", ("_extra", "CHProxy-User")),
+        ("Initial?", "is_initial_query"),
+        ("Host", "address"),
+        ("RAddress", ("_extra", "RemoteAddr")),
+        ("Time", "elapsed"),
+        ("Query", "query"),
+    ]
 )
 
-# Global variables
-pressed_key = queue.Queue()
-orig_settings = termios.tcgetattr(sys.stdin) # Keep original stdin settings
+DEFAULT_STATUS = (
+    "[q]: quit; [e]: export report; [p]: (un)pause updates; [?]: display this message"
+)
 
-# Useful class to control font colors
-class color:
-   PURPLE = '\033[95m'
-   CYAN = '\033[96m'
-   DARKCYAN = '\033[36m'
-   BLUE = '\033[94m'
-   GREEN = '\033[92m'
-   YELLOW = '\033[93m'
-   RED = '\033[91m'
-   BOLD = '\033[1m'
-   UNDERLINE = '\033[4m'
-   END = '\033[0m'
+EXPORT_FILE_PATTERN = "/tmp/chtop_export_{}.json"
 
-# Trivial function to clear the screen
-def clear():
-  _ = os.system('clear')
 
-# Function to query CH
-def ch_query(query):
-  if is_py2:
-    url = URL + urllib.urlencode( { 'query' : query } )
-  else:
-    url = URL + urllib.parse.urlencode( { 'query' : query } )
-  try:
-    response = requests.get(url)
-  except Exception as e:
-    sys.exit("Problem with connectiong to ClickHouse: %s. Exiting." % str(e))
+class CHTopSession:
+    """Create and query ClickHouse session."""
 
-  return response
+    def __init__(self):
+        self.last_query_result = None
+        self.processes = []
 
-def processes_pretty_output(data):
-  clear()
+        self.is_closed = False
+        self.is_paused = False
 
-  # Build the final data to print
-  data_to_print = []
-  for row in data:
-    values = []
-    for mapping in MAPPINGS:
-      column = MAPPINGS[mapping]
-      if column == 'elapsed':
-        value = str(datetime.timedelta(seconds=row[column]))
-      elif column == 'http_user_agent':
-        if mapping == 'PUser':
-          puser = re.search('CHProxy-User: ([a-zA-Z0-9-]+)', row[column])
-          if puser:
-            value = puser.group(1)
-          else:
-            value = 'N/A'
-        elif mapping == 'RAddress':
-          host = re.search('RemoteAddr: (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):', row[column])
-          if host:
-            value = host.group(1)
-          else:
-            value = 'N/A'
-      else:
-        value = str(row[column])
-      values.append(value.replace("\n", " ").rstrip())
-    data_to_print.append(values)
+    def _do_query(self, query_text, json_result=True):
+        with requests.request(
+            "get", CH_URL, params={"query": query_text}, timeout=CH_QUERY_TIMEOUT
+        ) as resp:
+            if json_result:
+                val = resp.json()
+            else:
+                val = resp.text()
 
-  # Print the data nicely
-  print_format = "{:<36}  {:<13}  {:<10}  {:<8}  {:<25} {:<15}  {:<15}  {:<60}"
-  print((color.BOLD + print_format.format(*list(MAPPINGS.keys())) + color.END))
-  for row in data_to_print:
-    rows, columns = os.popen('stty size', 'r').read().split() # determine window size
-    print((print_format.format(*row))[0:int(columns)])
+        return val
 
-# Function used as a thread that polls for pressed key
-def key_poller(key_ready, stop):
-  # Don't wait for ENTER after key press
-  tty.setcbreak(sys.stdin)
+    def close(self):
+        """End session."""
 
-  key = 0
-  while key != 'q':
-    if not stop.isSet():
-      key = sys.stdin.read(1)[0]
-      pressed_key.put(key)
-      key_ready.set()
-      sleep(0.2)
+        self.is_closed = True
 
-  # Reset stdin settings (reverts no ENTER behavior)
-  termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
+    def pause(self):
+        """Toggle pause."""
 
-# Function used as a thread that displays active processes
-def show_processes(stop, kill):
-  query = 'SELECT * FROM ' + PROCESSES_TABLE + ' FORMAT JSON'
+        self.is_paused = not self.is_paused
 
-  while True:
-    if not stop.isSet():
-      response = ch_query(query)
-      processes_pretty_output(response.json()['data'])
+    def fetch_processes(self):
+        """Fetch the current state of ClickHouse process table."""
 
-    if kill.isSet():
-      break;
+        self.last_query_result = self._do_query(
+            f"SELECT * FROM {PROCESSES_TABLE} FORMAT JSON"
+        )
+        self.processes = copy.deepcopy(self.last_query_result["data"])
 
-    try:
-      if not stop.isSet(): sleep(REFRESH)
-    except KeyboardInterrupt:
-      break
+        for p in self.processes:
+            ua_string = p["http_user_agent"]
 
-# Function to handle full query displaying
-def show_full_query():
-  query = "SELECT query FROM system.query_log WHERE query_id = '{}' AND event_date = today()"
+            ua_extra_values = [v.strip() for v in ua_string.split(";")]
+            for v in ua_extra_values:
+                if ":" not in v:
+                    continue
+                p1, p2 = v.split(":", 1)
+                p1 = p1.strip()
+                p2 = p2.strip()
+                p[("_extra", p1)] = p2
+            p["query"] = " ".join(p["query"].splitlines())
 
-  termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
-  query_id = input(color.UNDERLINE + 'Query ID to analyze:' + color.END + ' ')
-  tty.setcbreak(sys.stdin)
-  response = ch_query(query.format(query_id))
-  clear()
-  print((response.text))
-  sys.stdin.read(1)[0]
+    def export(self):
+        """Export latest query information as json."""
 
-# Function to handle query kill command
-def kill_query():
-  query = "KILL QUERY WHERE query_id = '{}'"
+        filename = EXPORT_FILE_PATTERN.format(time.time())
+        with open(filename, "w", encoding="UTF-8") as f:
+            json.dump(self.last_query_result, f, indent=8)
 
-  termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
-  query_id = input(color.UNDERLINE + 'Query ID to kill:' + color.END + ' ')
-  tty.setcbreak(sys.stdin)
-  ch_query(query.format(query_id))
-  clear()
-  print('KILL query send')
-  sys.stdin.read(1)[0]
+        return filename
 
-# Main function
-def main():
-  # Threads' events
-  stop_processes = threading.Event() # controls 'show processes' thread
-  stop_key_poller = threading.Event() # controls 'key_poller' thread
-  key_ready = threading.Event() # is set once the key was pressed, used in the 'key_poller' thread
-  kill_flag = threading.Event() # is set once the program is expected to be finished
 
-  # Threads definition and start
-  show_processes_t = threading.Thread(target = show_processes, args = (stop_processes, kill_flag))
-  show_processes_t.start()
-  key_poller_t = threading.Thread(target = key_poller, args = (key_ready, stop_key_poller))
-  key_poller_t.start()
+class CHTopUI:
+    """Manages top-like curses UI."""
 
-  # Main loop
-  key = 0
-  while key != 'q':
-    stop_processes.clear() # 'activate' 'show processes' thread
-    if key_ready.isSet():
-      key = pressed_key.get()
-      key_ready.clear()
-      if key == 'f':
-        stop_processes.set()
-        stop_key_poller.set()
-        show_full_query()
-        stop_key_poller.clear()
-      elif key == 'k':
-        stop_processes.set()
-        stop_key_poller.set()
-        kill_query()
-        stop_key_poller.clear()
+    def __init__(self, session):
+        self.session = session
 
-  # If we are here, it means we want to exit
-  kill_flag.set()
+        screen = curses.initscr()
 
-if __name__ == '__main__':
-  main()
+        curses.curs_set(0)
+        curses.noecho()
+        curses.cbreak()
+        curses.halfdelay(int(REFRESH * 10 + 0.5))
+        screen.keypad(0)
 
+        self.screen = screen
+        self.rows, self.cols = screen.getmaxyx()
+
+        self.format_string = (
+            "{:<36}  {:<13}  {:<10}  {:<8}  {:<25} {:<16}  {:<15}  {:<60}"
+        )
+
+        self.status = DEFAULT_STATUS
+
+    def cleanup(self):
+        """Restore terminal."""
+
+        self.screen.keypad(0)
+        self.screen.nodelay(False)
+
+        curses.curs_set(1)
+        curses.echo()
+        curses.nocbreak()
+        curses.endwin()
+
+    def resize(self):
+        """Updates UI state on terminal resize."""
+
+        self.rows, self.cols = self.screen.getmaxyx()
+
+    def format_entries(self, data):
+        """Formats data provided using pre-defined format string."""
+
+        return self.format_string.format(*data)[: self.cols - 1]
+
+    def draw(self):
+        """Draw UI."""
+
+        self.screen.clear()
+
+        header = self.format_entries(MAPPINGS.keys())
+        self.screen.addstr(0, 0, header, curses.A_REVERSE | curses.A_BOLD)
+
+        last_table_row = self.rows - 2
+        status_row = self.rows - 1
+
+        self.screen.addstr(status_row, 0, self.status)
+
+        for line_no, process_data in enumerate(self.session.processes):
+            line_pos = line_no + 1
+            if line_pos >= last_table_row:
+                self.screen.addstr(line_pos, 0, "....")
+                break
+
+            process_line = self.format_entries(
+                [process_data.get(v, "N/A") for v in MAPPINGS.values()]
+            )
+            self.screen.addstr(line_pos, 0, process_line)
+
+        self.screen.refresh()
+
+    def handle_user_input(self):
+        """Handle user input"""
+
+        key = self.screen.getch()
+
+        if key == curses.KEY_RESIZE:
+            self.resize()
+        elif key == ord("q"):
+            self.session.close()
+        elif key == ord("e"):
+            export_file = self.session.export()
+            self.status = f"Exported to: {export_file}"
+        elif key == ord("p"):
+            self.session.pause()
+            if self.session.is_paused:
+                self.status = "Updates paused"
+            else:
+                self.status = "Updates resumed"
+        elif key != -1:
+            self.status = DEFAULT_STATUS
+
+
+class CHTop:
+    """Manages CHTop state, initialization and graceful shutdown."""
+
+    def __init__(self):
+        self.session = CHTopSession()
+        self.ui = CHTopUI(self.session)
+
+    def cleanup(self):
+        """Gracefully exit."""
+
+        self.ui.cleanup()
+
+    def updater(self):
+        """Task running updates every {REFRESH} seconds."""
+
+        while not self.session.is_closed:
+            if not self.session.is_paused:
+                self.session.fetch_processes()
+            self.ui.draw()
+            self.ui.handle_user_input()
+
+    def main(self):
+        """Program entry point."""
+
+        try:
+            self.updater()
+        except KeyboardInterrupt:
+            self.session.close()
+        finally:
+            self.cleanup()
+
+
+app = CHTop()
+app.main()
