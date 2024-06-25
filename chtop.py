@@ -23,6 +23,7 @@ import curses
 import curses.ascii
 import json
 import time
+from collections import OrderedDict
 
 import requests
 
@@ -34,7 +35,7 @@ CH_QUERY_TIMEOUT = 10
 
 PROCESSES_TABLE = "system.processes"
 REFRESH = 2  # seconds
-MAPPINGS = dict(
+MAPPINGS = OrderedDict(
     [
         ("ID", "query_id"),
         ("User", "user"),
