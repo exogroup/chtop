@@ -55,7 +55,7 @@ DEFAULT_STATUS = (
 
 SELECT_MODE_STATUS = (
     "[up/down arrows]: navigate; [r]: manual refresh; "
-    "[e]: export selected; [k]: kill; [ESC]: return"
+    "[e]: export selected; [k]: kill; [x]: return"
 )
 
 KILL_CONFIRM_MESSAGE = (
@@ -156,9 +156,6 @@ class CHTopUI:
 
         screen = curses.initscr()
 
-        self.escdelay = curses.get_escdelay()
-        curses.set_escdelay(10)
-
         curses.curs_set(0)
         curses.noecho()
         curses.cbreak()
@@ -183,7 +180,6 @@ class CHTopUI:
         self.screen.keypad(0)
         self.screen.nodelay(False)
 
-        curses.set_escdelay(self.escdelay)
         curses.curs_set(1)
         curses.echo()
         curses.nocbreak()
@@ -261,7 +257,7 @@ class CHTopUI:
             elif key == ord("e"):
                 export_file = self.session.export_single(self.selected_line)
                 self.status = f"Exported to: {export_file}"
-            elif key == curses.ascii.ESC:
+            elif key == ord("x"):
                 self.select_mode = False
                 self.selected_line = 0
                 self.status = DEFAULT_STATUS
