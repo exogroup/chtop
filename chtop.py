@@ -20,6 +20,7 @@
 
 import copy
 import curses
+import curses.ascii
 import json
 import time
 
@@ -47,10 +48,20 @@ MAPPINGS = dict(
 )
 
 DEFAULT_STATUS = (
-    "[q]: quit; [e]: export report; [p]: (un)pause updates; [?]: display this message"
+    "[q]: quit; [e]: export report; [p]: (un)pause updates; "
+    "[s]: select a query; [?]: display this message"
 )
 
-EXPORT_FILE_PATTERN = "/tmp/chtop_export_{}.json"
+SELECT_MODE_STATUS = (
+    "[up/down arrows]: navigate; [r]: manual refresh; "
+    "[e]: export selected; [k]: kill; [ESC]: return"
+)
+
+KILL_CONFIRM_MESSAGE = (
+    "Are you sure? [Type upper case Y to confirm, any other key to cancel]"
+)
+
+EXPORT_FILE_PATTERN = "/tmp/chtop_export_{}.{}"
 
 
 class CHTopSession:
@@ -70,7 +81,7 @@ class CHTopSession:
             if json_result:
                 val = resp.json()
             else:
-                val = resp.text()
+                val = resp.text
 
         return val
 
@@ -83,6 +94,13 @@ class CHTopSession:
         """Toggle pause."""
 
         self.is_paused = not self.is_paused
+
+    def kill(self, task_id):
+        """Try to kill specified task."""
+        result = self._do_query(
+            f"KILL QUERY WHERE query_id = '{task_id}'", json_result=False
+        )
+        return result
 
     def fetch_processes(self):
         """Fetch the current state of ClickHouse process table."""
@@ -105,14 +123,28 @@ class CHTopSession:
                 p[("_extra", p1)] = p2
             p["query"] = " ".join(p["query"].splitlines())
 
-    def export(self):
-        """Export latest query information as json."""
+    def export_report(self):
+        """Export all information received with latest update as json."""
 
-        filename = EXPORT_FILE_PATTERN.format(time.time())
+        filename = EXPORT_FILE_PATTERN.format(time.time(), "json")
         with open(filename, "w", encoding="UTF-8") as f:
             json.dump(self.last_query_result, f, indent=8)
 
         return filename
+
+    def export_single(self, idx):
+        """Export single query string."""
+
+        filename = EXPORT_FILE_PATTERN.format(time.time(), "sql")
+        with open(filename, "w", encoding="UTF-8") as f:
+            f.write(self.get_details(idx)["query"])
+
+        return filename
+
+    def get_details(self, idx):
+        """Get detailed information about a specific entry."""
+
+        return self.last_query_result["data"][idx]
 
 
 class CHTopUI:
@@ -123,11 +155,14 @@ class CHTopUI:
 
         screen = curses.initscr()
 
+        self.escdelay = curses.get_escdelay()
+        curses.set_escdelay(10)
+
         curses.curs_set(0)
         curses.noecho()
         curses.cbreak()
         curses.halfdelay(int(REFRESH * 10 + 0.5))
-        screen.keypad(0)
+        screen.keypad(1)
 
         self.screen = screen
         self.rows, self.cols = screen.getmaxyx()
@@ -138,12 +173,16 @@ class CHTopUI:
 
         self.status = DEFAULT_STATUS
 
+        self.selected_line = 0
+        self.select_mode = False
+
     def cleanup(self):
         """Restore terminal."""
 
         self.screen.keypad(0)
         self.screen.nodelay(False)
 
+        curses.set_escdelay(self.escdelay)
         curses.curs_set(1)
         curses.echo()
         curses.nocbreak()
@@ -165,15 +204,25 @@ class CHTopUI:
         self.screen.clear()
 
         header = self.format_entries(MAPPINGS.keys())
-        self.screen.addstr(0, 0, header, curses.A_REVERSE | curses.A_BOLD)
+        flags = 0
+        if not self.select_mode:
+            flags = curses.A_REVERSE | curses.A_BOLD
+        self.screen.addstr(0, 0, header, flags)
 
         last_table_row = self.rows - 2
         status_row = self.rows - 1
 
-        self.screen.addstr(status_row, 0, self.status)
+        offset = 0
+        if self.select_mode:
+            offset = max(0, self.selected_line - last_table_row + (self.rows // 2))
+
+        self.screen.addstr(status_row, 0, self.status[: self.cols - 1])
 
         for line_no, process_data in enumerate(self.session.processes):
-            line_pos = line_no + 1
+            line_pos = line_no + 1 - offset
+            if line_pos < 1:
+                continue
+
             if line_pos >= last_table_row:
                 self.screen.addstr(line_pos, 0, "....")
                 break
@@ -181,7 +230,13 @@ class CHTopUI:
             process_line = self.format_entries(
                 [process_data.get(v, "N/A") for v in MAPPINGS.values()]
             )
-            self.screen.addstr(line_pos, 0, process_line)
+
+            flags = 0
+
+            if self.select_mode and self.selected_line == line_no:
+                flags = curses.A_REVERSE | curses.A_BOLD
+
+            self.screen.addstr(line_pos, 0, process_line, flags)
 
         self.screen.refresh()
 
@@ -192,19 +247,61 @@ class CHTopUI:
 
         if key == curses.KEY_RESIZE:
             self.resize()
+            self.draw()
         elif key == ord("q"):
             self.session.close()
-        elif key == ord("e"):
-            export_file = self.session.export()
-            self.status = f"Exported to: {export_file}"
-        elif key == ord("p"):
-            self.session.pause()
-            if self.session.is_paused:
-                self.status = "Updates paused"
-            else:
-                self.status = "Updates resumed"
-        elif key != -1:
-            self.status = DEFAULT_STATUS
+        elif self.select_mode:
+            if key == curses.KEY_UP:
+                self.selected_line = max(0, self.selected_line - 1)
+            elif key == curses.KEY_DOWN:
+                self.selected_line = min(
+                    len(self.session.processes) - 1, self.selected_line + 1
+                )
+            elif key == ord("e"):
+                export_file = self.session.export_single(self.selected_line)
+                self.status = f"Exported to: {export_file}"
+            elif key == curses.ascii.ESC:
+                self.select_mode = False
+                self.selected_line = 0
+                self.status = DEFAULT_STATUS
+            elif key == ord("r"):
+                self.session.fetch_processes()
+                self.selected_line = 0
+                self.draw()
+            elif key == ord("k"):
+                task_id = self.session.get_details(self.selected_line)["query_id"]
+                self.status = KILL_CONFIRM_MESSAGE
+                self.draw()
+
+                key = -1
+                while key == -1:
+                    key = self.screen.getch()
+
+                if key == ord("Y"):
+                    self.session.kill(task_id)
+                    self.status = f"Attempted to kill task with ID '{task_id}'"
+                    self.session.fetch_processes()
+                    self.selected_line = 0
+                    self.draw()
+                else:
+                    self.status = "Cancelled."
+            elif key != -1:
+                self.status = SELECT_MODE_STATUS
+        else:
+            if key == ord("e"):
+                export_file = self.session.export_report()
+                self.status = f"Exported to: {export_file}"
+            elif key == ord("p"):
+                self.session.pause()
+                if self.session.is_paused:
+                    self.status = "Updates paused"
+                else:
+                    self.status = "Updates resumed"
+            elif key == ord("s"):
+                self.select_mode = True
+                self.status = SELECT_MODE_STATUS
+            elif key != -1:
+                self.status = DEFAULT_STATUS
 
 
 class CHTop:
@@ -223,7 +320,7 @@ class CHTop:
         """Task running updates every {REFRESH} seconds."""
 
         while not self.session.is_closed:
-            if not self.session.is_paused:
+            if not self.session.is_paused and not self.ui.select_mode:
                 self.session.fetch_processes()
             self.ui.draw()
             self.ui.handle_user_input()
