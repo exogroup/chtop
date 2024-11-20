@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   release:
-    uses: exogroup/shared-workflows/.github/workflows/poetry-release.yml@main
-    secrets:
-      pypi_url: ${{ vars.PYPI_EXOGROUP_URL }}
-      pypi_user: ${{ secrets.PYPI_EXOGROUP_USER }}
-      pypi_secret: ${{ secrets.PYPI_EXOGROUP_SECRET }}
+    runs-on: self-hosted
+    steps:
+      - name: Publish PyPI package
+        uses: cadifyai/poetry-publish@v0.1.0
+        with:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          PUBLISH_REGISTRY_USER: ${{ secrets.PYPI_EXOGROUP_USER }}
+          PUBLISH_REGISTRY_PASSWORD: ${{ secrets.PYPI_EXOGROUP_SECRET }}
+          PUBLISH_REGISTRY: ${{ vars.PYPI_EXOGROUP_URL }}
