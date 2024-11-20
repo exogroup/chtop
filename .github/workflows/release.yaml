@@ -1,0 +1,17 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: exogroup/shared-workflows/.github/workflows/poetry-release.yml@main
+    secrets:
+      pypi_url: ${{ vars.PYPI_EXOGROUP_URL }}
+      pypi_user: ${{ secrets.PYPI_EXOGROUP_USER }}
+      pypi_secret: ${{ secrets.PYPI_EXOGROUP_SECRET }}

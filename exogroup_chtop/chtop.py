@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" Simple top-like utility for ClickHouse. """
+"""Simple top-like utility for ClickHouse."""
 
 #
 # Copyright 2020 EXADS
@@ -22,6 +22,7 @@ import copy
 import curses
 import curses.ascii
 import json
+import sys
 import time
 from collections import OrderedDict
 
@@ -35,32 +36,22 @@ CH_QUERY_TIMEOUT = 10
 
 PROCESSES_TABLE = "system.processes"
 REFRESH = 2  # seconds
-MAPPINGS = OrderedDict(
-    [
-        ("ID", "query_id"),
-        ("User", "user"),
-        ("PUser", ("_extra", "CHProxy-User")),
-        ("Initial?", "is_initial_query"),
-        ("Host", "address"),
-        ("RAddress", ("_extra", "RemoteAddr")),
-        ("Time", "elapsed"),
-        ("Query", "query"),
-    ]
-)
+MAPPINGS = OrderedDict([
+    ("ID", "query_id"),
+    ("User", "user"),
+    ("PUser", ("_extra", "CHProxy-User")),
+    ("Initial?", "is_initial_query"),
+    ("Host", "address"),
+    ("RAddress", ("_extra", "RemoteAddr")),
+    ("Time", "elapsed"),
+    ("Query", "query"),
+])
 
-DEFAULT_STATUS = (
-    "[q]: quit; [e]: export report; [p]: (un)pause updates; "
-    "[s]: select a query; [?]: display this message"
-)
+DEFAULT_STATUS = "[q]: quit; [e]: export report; [p]: (un)pause updates; [s]: select a query; [?]: display this message"
 
-SELECT_MODE_STATUS = (
-    "[up/down arrows]: navigate; [r]: manual refresh; "
-    "[e]: export selected; [k]: kill; [x]: return"
-)
+SELECT_MODE_STATUS = "[up/down arrows]: navigate; [r]: manual refresh; [e]: export selected; [k]: kill; [x]: return"
 
-KILL_CONFIRM_MESSAGE = (
-    "Are you sure? [Type upper case Y to confirm, any other key to cancel]"
-)
+KILL_CONFIRM_MESSAGE = "Are you sure? [Type upper case Y to confirm, any other key to cancel]"
 
 EXPORT_FILE_PATTERN = "/tmp/chtop_export_{}.{}"
 
@@ -76,9 +67,7 @@ class CHTopSession:
         self.is_paused = False
 
     def _do_query(self, query_text, json_result=True):
-        with requests.request(
-            "get", CH_URL, params={"query": query_text}, timeout=CH_QUERY_TIMEOUT
-        ) as resp:
+        with requests.request("get", CH_URL, params={"query": query_text}, timeout=CH_QUERY_TIMEOUT) as resp:
             if json_result:
                 val = resp.json()
             else:
@@ -98,17 +87,14 @@ class CHTopSession:
 
     def kill(self, task_id):
         """Try to kill specified task."""
-        result = self._do_query(
-            f"KILL QUERY WHERE query_id = '{task_id}'", json_result=False
-        )
+        result = self._do_query(f"KILL QUERY WHERE query_id = '{task_id}'", json_result=False)
         return result
 
     def fetch_processes(self):
         """Fetch the current state of ClickHouse process table."""
 
-        self.last_query_result = self._do_query(
-            f"SELECT * FROM {PROCESSES_TABLE} FORMAT JSON"
-        )
+        self.last_query_result = self._do_query(f"SELECT * FROM {PROCESSES_TABLE} FORMAT JSON")
+        assert isinstance(self.last_query_result, dict)
         self.processes = copy.deepcopy(self.last_query_result["data"])
 
         for p in self.processes:
@@ -145,6 +131,7 @@ class CHTopSession:
     def get_details(self, idx):
         """Get detailed information about a specific entry."""
 
+        assert isinstance(self.last_query_result, dict)
         return self.last_query_result["data"][idx]
 
 
@@ -160,14 +147,12 @@ class CHTopUI:
         curses.noecho()
         curses.cbreak()
         curses.halfdelay(int(REFRESH * 10 + 0.5))
-        screen.keypad(1)
+        screen.keypad(True)
 
         self.screen = screen
         self.rows, self.cols = screen.getmaxyx()
 
-        self.format_string = (
-            "{:<36}  {:<13}  {:<10}  {:<8}  {:<25} {:<16}  {:<15}  {:<60}"
-        )
+        self.format_string = "{:<36}  {:<13}  {:<10}  {:<8}  {:<25} {:<16}  {:<15}  {:<60}"
 
         self.status = DEFAULT_STATUS
 
@@ -177,7 +162,7 @@ class CHTopUI:
     def cleanup(self):
         """Restore terminal."""
 
-        self.screen.keypad(0)
+        self.screen.keypad(False)
         self.screen.nodelay(False)
 
         curses.curs_set(1)
@@ -224,9 +209,7 @@ class CHTopUI:
                 self.screen.addstr(line_pos, 0, "....")
                 break
 
-            process_line = self.format_entries(
-                [process_data.get(v, "N/A") for v in MAPPINGS.values()]
-            )
+            process_line = self.format_entries([process_data.get(v, "N/A") for v in MAPPINGS.values()])
 
             flags = 0
 
@@ -251,9 +234,7 @@ class CHTopUI:
             if key == curses.KEY_UP:
                 self.selected_line = max(0, self.selected_line - 1)
             elif key == curses.KEY_DOWN:
-                self.selected_line = min(
-                    len(self.session.processes) - 1, self.selected_line + 1
-                )
+                self.selected_line = min(len(self.session.processes) - 1, self.selected_line + 1)
             elif key == ord("e"):
                 export_file = self.session.export_single(self.selected_line)
                 self.status = f"Exported to: {export_file}"
@@ -333,5 +314,10 @@ class CHTop:
             self.cleanup()
 
 
-app = CHTop()
-app.main()
+def main():
+    app = CHTop()
+    sys.exit(app.main())
+
+
+if __name__ == "__main__":
+    main()
